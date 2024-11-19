@@ -1,0 +1,12 @@
+# KEYWORD1 specifies datatypes and C/C++ keywords
+hmac-sha1	KEYWORD1
+base32	KEYWORD1
+totp	KEYWORD1
+rfc6238	KEYWORD1
+
+# KEYWORD2 specifies methods and functions
+hmac_sha1	KEYWORD2
+encodeBase32	KEYWORD2
+decodeBase32	KEYWORD2
+totp_base32	KEYWORD2
+

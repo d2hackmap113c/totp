@@ -1,4 +1,3 @@
-#!/usr/bin/tcc -run
 #include <stdio.h>
 #include <assert.h>
 #include <time.h>
