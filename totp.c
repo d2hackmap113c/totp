@@ -1,11 +1,6 @@
 #include <stdio.h>
-#include <assert.h>
 #include <time.h>
 #include <string.h>
-#include <stdlib.h>
-#include <sys/stat.h>
-#include <sys/fcntl.h>
-#include <errno.h>
 
 #define SHA1HashSize 20
 #define FLAG_CORRUPTED  2
@@ -15,7 +10,7 @@ struct sha1 {
   uint32_t Length_Low;              /* Message length in bits         */
   uint32_t Length_High;             /* Message length in bits         */
   uint16_t sha1buflen;     /* Index into message block array */
-  uint8_t  corrupt,computed;
+  uint8_t  done;
 };
 int sha1_reset (struct sha1* context);
 int sha1_input (struct sha1* context, const uint8_t* inData, unsigned length);
@@ -33,8 +28,7 @@ int sha1_reset(struct sha1* context) {
   context->sha1hash[2] = 0x98BADCFE;
   context->sha1hash[3] = 0x10325476;
   context->sha1hash[4] = 0xC3D2E1F0;
-  context->corrupt = 0;
-  context->computed = 0;
+  context->done = 0;
   return 0;
 }
 void _process_block(struct sha1 *context) {
@@ -78,59 +72,47 @@ void _process_block(struct sha1 *context) {
 	context->sha1hash[4] += E;
 	context->sha1buflen = 0;
 }
-static void _pad_block(struct sha1* context) {
-  if (context->sha1buflen > 55) {
-    context->sha1buf[context->sha1buflen++] = 0x80;
-    while (context->sha1buflen < 64) context->sha1buf[context->sha1buflen++] = 0;
-    _process_block(context);
-    while (context->sha1buflen < 56) context->sha1buf[context->sha1buflen++] = 0;
-  } else {
-    context->sha1buf[context->sha1buflen++] = 0x80;
-    while (context->sha1buflen < 56) context->sha1buf[context->sha1buflen++] = 0;
+int sha1_input(struct sha1* context, const uint8_t* inData, unsigned length) {
+  if (length == 0) return 0;
+  if (!context||!inData) return -1;
+  if (context->done) sha1_reset(context);
+  while (length) {
+    context->sha1buf[context->sha1buflen++] = *inData++;
+    context->Length_Low+=8;
+    if (context->Length_Low==0) context->Length_High++;
+    if (context->sha1buflen==64) _process_block(context);
+    length--;
   }
-  context->sha1buf[56] = context->Length_High >> 24;
-  context->sha1buf[57] = context->Length_High >> 16;
-  context->sha1buf[58] = context->Length_High >>  8;
-  context->sha1buf[59] = context->Length_High >>  0;
-  context->sha1buf[60] = context->Length_Low  >> 24;
-  context->sha1buf[61] = context->Length_Low  >> 16;
-  context->sha1buf[62] = context->Length_Low  >>  8;
-  context->sha1buf[63] = context->Length_Low  >>  0;
-  _process_block(context);
+  return 0;
 }
 int sha1_result(struct sha1* context, uint8_t Message_Digest[SHA1HashSize]) {
   int i;
   if (!context||!Message_Digest) return -1;
-  if (context->corrupt) return -1;
-  if (!context->computed) {
-    _pad_block(context);
+  if (!context->done) {
+		if (context->sha1buflen > 55) {
+			context->sha1buf[context->sha1buflen++] = 0x80;
+			while (context->sha1buflen < 64) context->sha1buf[context->sha1buflen++] = 0;
+			_process_block(context);
+			while (context->sha1buflen < 56) context->sha1buf[context->sha1buflen++] = 0;
+		} else {
+			context->sha1buf[context->sha1buflen++] = 0x80;
+			while (context->sha1buflen < 56) context->sha1buf[context->sha1buflen++] = 0;
+		}
+		context->sha1buf[56] = context->Length_High >> 24;
+		context->sha1buf[57] = context->Length_High >> 16;
+		context->sha1buf[58] = context->Length_High >>  8;
+		context->sha1buf[59] = context->Length_High >>  0;
+		context->sha1buf[60] = context->Length_Low  >> 24;
+		context->sha1buf[61] = context->Length_Low  >> 16;
+		context->sha1buf[62] = context->Length_Low  >>  8;
+		context->sha1buf[63] = context->Length_Low  >>  0;
+		_process_block(context);
     for (i=0;i<64;++i) context->sha1buf[i] = 0;
     context->Length_Low=0;context->Length_High=0;
-    context->computed=1;
+    context->done=1;
   }
   for (i=0;i<SHA1HashSize;++i)
     Message_Digest[i] = (context->sha1hash[i>>2]>>(8 * (3 - (i & 0x03))));
-  return 0;
-}
-int sha1_input(struct sha1* context, const uint8_t* inData, unsigned length) {
-  if (length == 0) return 0;
-  if (!context||!inData) return -1;
-  if (context->computed) {
-    context->corrupt=1;
-    return -1;
-  }
-  if (context->corrupt) return -1;
-  while (length&&!context->corrupt) {
-    context->sha1buf[context->sha1buflen++] = *inData;
-    context->Length_Low+=8;
-    if (context->Length_Low == 0) {
-      context->Length_High++;
-      if (context->Length_High==0) context->corrupt=1; // Message is too long
-    }
-    if (context->sha1buflen == 64) _process_block(context);
-    inData++;
-    length--;
-  }
   return 0;
 }
 #define HMAC_SHA1_DIGEST_SIZE 20
@@ -138,7 +120,6 @@ int sha1_input(struct sha1* context, const uint8_t* inData, unsigned length) {
 void hmac_sha1(const uint8_t* key, uint32_t keysize, const uint8_t* msg, uint32_t msgsize, uint8_t* output) {
   struct sha1 outer, inner;
   uint8_t tmp;
-	assert(keysize<256);
   if (keysize > HMAC_SHA1_BLOCK_SIZE) {
     uint8_t new_key[HMAC_SHA1_DIGEST_SIZE];
     sha1_reset(&outer);
@@ -148,7 +129,7 @@ void hmac_sha1(const uint8_t* key, uint32_t keysize, const uint8_t* msg, uint32_
   } 
   sha1_reset(&outer);
   sha1_reset(&inner);
-  uint8_t i;
+  int i;
   for (i = 0; i < keysize; ++i) {
     tmp=key[i]^0x5C;sha1_input(&outer, &tmp, 1);
     tmp=key[i]^0x36;sha1_input(&inner, &tmp, 1);
@@ -165,26 +146,17 @@ void hmac_sha1(const uint8_t* key, uint32_t keysize, const uint8_t* msg, uint32_
 int encodeBase32(char* inputBuf, int inputLen, char *outputBuf, int usePadding) {
   char base32StandardAlphabet[] = {"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"};
   char standardPaddingChar = '='; 
-  int outputLen = 0;
-  int count = 0;
-  int bufSize = 8;
-  int index = 0;
+  int outputLen = 0,count = 0,bufSize = 8,index = 0;
   if (inputLen < 0 || inputLen > 268435456LL) return 0;
   if (inputLen > 0) {
-    int buffer = inputBuf[0];
-    int next = 1;
-    int bitsLeft = 8;
+    int buffer=inputBuf[0],next = 1,bitsLeft = 8;
     while (count < bufSize && (bitsLeft > 0 || next < inputLen)) {
       if (bitsLeft < 5) {
         if (next < inputLen) {
-          buffer <<= 8;
-          buffer |= inputBuf[next] & 0xFF;
-          next++;
-          bitsLeft += 8;
+          buffer<<=8;buffer|=inputBuf[next] & 0xFF;
+          next++;bitsLeft+=8;
         } else {
-          int pad = 5 - bitsLeft;
-          buffer <<= pad;
-          bitsLeft += pad;
+          int pad=5-bitsLeft;buffer<<=pad;bitsLeft+=pad;
         }
       }
       index = 0x1F & (buffer >> (bitsLeft -5));
@@ -193,13 +165,8 @@ int encodeBase32(char* inputBuf, int inputLen, char *outputBuf, int usePadding) 
     }
   }
   if (usePadding) {
-    int pads = (outputLen % 8);
-    if (pads > 0) {
-      pads = (8 - pads);
-      for (int i = 0; i < pads; i++) {
-        outputBuf[outputLen++] = standardPaddingChar;
-      }
-    }
+    int pads=outputLen%8;
+    if (pads) {pads=8-pads;for (int i=0;i<pads;i++) outputBuf[outputLen++]=standardPaddingChar;}
   }
   return outputLen;
 }
@@ -220,20 +187,17 @@ int decodeBase32(char* inputBuf, int inputLen, char *outputBuf) {
   }
   return outputLen;
 }
-static int DIGITS_POWER[]
-     // 0 1  2   3    4     5      6       7        8
-     = {1,10,100,1000,10000,100000,1000000,10000000,100000000 };
-void showtime() {
-	time_t t=time(0);
+void showtime(time_t t) {
 	struct tm *m=gmtime(&t);
-	if (!m) {printf("Error: %d\n",errno);return;}
-	printf("GMT time: %d-%d-%d %02d:%02d:%02d\n",1900+m->tm_year,m->tm_mon,m->tm_mday,
+	if (!m) return;
+	printf("GMT time: %d-%d-%d %02d:%02d:%02d\n",1900+m->tm_year,m->tm_mon+1,m->tm_mday,
 		m->tm_hour,m->tm_min,m->tm_sec);
 }
 int totp_base32(char *base32secret,int digits,time_t t) {
+	static int DIGITS_POWER[]={1,10,100,1000,10000,100000,1000000,10000000,100000000};
 	char secret[128],stepHex[8],hash[SHA1HashSize];
 	int secretLen=decodeBase32(base32secret,strlen(base32secret),secret);
-	int steps=t/30;
+	time_t steps=t/30;
 	for (int i=7;i>=0;i--) {stepHex[i]=steps&0xFF;steps>>=8;}
 	hmac_sha1(secret,secretLen,stepHex,8,hash);
 	int offset=hash[SHA1HashSize - 1] & 0xf;
@@ -249,7 +213,7 @@ void rf6238test() {
 		int t=testTime[i];
 		int d=totp_base32(base32secret,8,t);
 		printf("%d\t%08d\t%08d\n",t,d,answer[i]);
-		assert(d==answer[i]);
+		if (d!=answer[i]) {printf("Test Error\n");return;}
 	}
 	printf("OK\n");
 }
@@ -262,7 +226,7 @@ int main(int argc,char *argv[]) {
 	}
 	char *secret=argv[1];
 	if (strcmp(secret,"gmt")==0) {
-		showtime();
+		showtime(time(0));
 	} else if (strcmp(secret,"valid")==0) {
 		time_t t=time(0);
 		printf("valid in %d seconds\n",30-(t%30));
